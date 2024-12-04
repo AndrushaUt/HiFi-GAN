@@ -9,6 +9,75 @@ from src.datasets.data_utils import inf_loop
 from src.metrics.tracker import MetricTracker
 from src.utils.io_utils import ROOT_PATH
 
+import torchaudio
+
+import librosa
+
+from dataclasses import dataclass
+import torch.nn as nn
+
+
+@dataclass
+class MelSpectrogramConfig:
+    sr: int = 22050
+    win_length: int = 1024
+    hop_length: int = 256
+    n_fft: int = 1024
+    f_min: int = 0
+    f_max: int = 8000
+    n_mels: int = 80
+    power: float = 1.0
+
+    pad_value: float = -11.5129251
+
+
+class MelSpectrogram(nn.Module):
+
+    def __init__(self, config: MelSpectrogramConfig):
+        super(MelSpectrogram, self).__init__()
+
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+
+        self.config = config
+
+        self.mel_spectrogram = torchaudio.transforms.MelSpectrogram(
+            sample_rate=config.sr,
+            win_length=config.win_length,
+            hop_length=config.hop_length,
+            n_fft=config.n_fft,
+            f_min=config.f_min,
+            f_max=config.f_max,
+            n_mels=config.n_mels,
+            center=False,
+            pad=(config.n_fft - config.hop_length) // 2
+        ).to(device)
+
+        # The is no way to set power in constructor in 0.5.0 version.
+        self.mel_spectrogram.spectrogram.power = config.power
+
+        # Default `torchaudio` mel basis uses HTK formula. In order to be compatible with WaveGlow
+        # we decided to use Slaney one instead (as well as `librosa` does by default).
+        mel_basis = librosa.filters.mel(
+            sr=config.sr,
+            n_fft=config.n_fft,
+            n_mels=config.n_mels,
+            fmin=config.f_min,
+            fmax=config.f_max
+        ).T
+        self.mel_spectrogram.mel_scale.fb.copy_(torch.tensor(mel_basis))
+
+    def forward(self, audio: torch.Tensor) -> torch.Tensor:
+        """
+        :param audio: Expected shape is [B, T]
+        :return: Shape is [B, n_mels, T']
+        """
+
+        mel = self.mel_spectrogram(audio) \
+            .clamp_(min=1e-5) \
+            .log_()
+
+        return mel
+
 
 class BaseTrainer:
     """
@@ -17,12 +86,18 @@ class BaseTrainer:
 
     def __init__(
         self,
-        model,
-        criterion,
+        generator,
+        msd,
+        mpd,
+        criterion_generator,
+        criterion_discriminator,
+        criterion_features,
+        criterion_mel_spec,
         metrics,
-        optimizer,
-        lr_scheduler,
-        text_encoder,
+        optimizer_generator,
+        optimizer_discriminator,
+        lr_scheduler_generator,
+        lr_scheduler_discriminator,
         config,
         device,
         dataloaders,
@@ -68,12 +143,19 @@ class BaseTrainer:
         self.logger = logger
         self.log_step = config.trainer.get("log_step", 50)
 
-        self.model = model
-        self.criterion = criterion
-        self.optimizer = optimizer
-        self.lr_scheduler = lr_scheduler
-        self.text_encoder = text_encoder
+        self.generator = generator
+        self.msd = msd
+        self.mpd = mpd
+        self.criterion_generator = criterion_generator
+        self.criterion_discriminator = criterion_discriminator
+        self.criterion_features = criterion_features
+        self.criterion_mel_spec = criterion_mel_spec
+        self.optimizer_generator = optimizer_generator
+        self.optimizer_discriminator = optimizer_discriminator
+        self.lr_scheduler_generator = lr_scheduler_generator
+        self.lr_scheduler_discriminator = lr_scheduler_discriminator
         self.batch_transforms = batch_transforms
+        self.mec_spec = MelSpectrogram(MelSpectrogramConfig())
 
         # define dataloaders
         self.train_dataloader = dataloaders["train"]
@@ -122,7 +204,9 @@ class BaseTrainer:
         self.metrics = metrics
         self.train_metrics = MetricTracker(
             *self.config.writer.loss_names,
-            "grad_norm",
+            "generator_grad_norm",
+            "mpd_grad_norm",
+            "msd_grad_norm",
             *[m.name for m in self.metrics["train"]],
             writer=self.writer,
         )
@@ -169,6 +253,9 @@ class BaseTrainer:
             self._last_epoch = epoch
             result = self._train_epoch(epoch)
 
+            self.lr_scheduler_generator.step()
+            self.lr_scheduler_discriminator.step()
+
             # save logged information into logs dict
             logs = {"epoch": epoch}
             logs.update(result)
@@ -201,7 +288,9 @@ class BaseTrainer:
                 this epoch.
         """
         self.is_train = True
-        self.model.train()
+        self.generator.train()
+        self.mpd.train()
+        self.msd.train()
         self.train_metrics.reset()
         self.writer.set_step((epoch - 1) * self.epoch_len)
         self.writer.add_scalar("epoch", epoch)
@@ -221,7 +310,9 @@ class BaseTrainer:
                 else:
                     raise e
 
-            self.train_metrics.update("grad_norm", self._get_grad_norm())
+            self.train_metrics.update("generator_grad_norm", self._get_generator_grad_norm())
+            self.train_metrics.update("msd_grad_norm", self._get_generator_grad_norm())
+            self.train_metrics.update("mpd_grad_norm", self._get_generator_grad_norm())
 
             # log current results
             if batch_idx % self.log_step == 0:
@@ -232,7 +323,10 @@ class BaseTrainer:
                     )
                 )
                 self.writer.add_scalar(
-                    "learning rate", self.lr_scheduler.get_last_lr()[0]
+                    "discriminator_learning rate", self.lr_scheduler_discriminator.get_last_lr()[0]
+                )
+                self.writer.add_scalar(
+                    "generator_learning rate", self.lr_scheduler_generator.get_last_lr()[0]
                 )
                 self._log_scalars(self.train_metrics)
                 self._log_batch(batch_idx, batch)
@@ -376,18 +470,31 @@ class BaseTrainer:
                 )
         return batch
 
-    def _clip_grad_norm(self):
+    def _clip_grad_norm_disc(self):
         """
         Clips the gradient norm by the value defined in
         config.trainer.max_grad_norm
         """
         if self.config["trainer"].get("max_grad_norm", None) is not None:
             clip_grad_norm_(
-                self.model.parameters(), self.config["trainer"]["max_grad_norm"]
+                self.msd.parameters(), self.config["trainer"]["max_grad_norm"]
+            )
+            clip_grad_norm_(
+                self.mpd.parameters(), self.config["trainer"]["max_grad_norm"]
+            )
+    
+    def _clip_grad_norm_gen(self):
+        """
+        Clips the gradient norm by the value defined in
+        config.trainer.max_grad_norm
+        """
+        if self.config["trainer"].get("max_grad_norm", None) is not None:
+            clip_grad_norm_(
+                self.generator.parameters(), self.config["trainer"]["max_grad_norm"]
             )
 
     @torch.no_grad()
-    def _get_grad_norm(self, norm_type=2):
+    def _get_generator_grad_norm(self, norm_type=2):
         """
         Calculates the gradient norm for logging.
 
@@ -396,7 +503,47 @@ class BaseTrainer:
         Returns:
             total_norm (float): the calculated norm.
         """
-        parameters = self.model.parameters()
+        parameters = self.generator.parameters()
+        if isinstance(parameters, torch.Tensor):
+            parameters = [parameters]
+        parameters = [p for p in parameters if p.grad is not None]
+        total_norm = torch.norm(
+            torch.stack([torch.norm(p.grad.detach(), norm_type) for p in parameters]),
+            norm_type,
+        )
+        return total_norm.item()
+
+    @torch.no_grad()
+    def _get_msd_grad_norm(self, norm_type=2):
+        """
+        Calculates the gradient norm for logging.
+
+        Args:
+            norm_type (float | str | None): the order of the norm.
+        Returns:
+            total_norm (float): the calculated norm.
+        """
+        parameters = self.msd.parameters()
+        if isinstance(parameters, torch.Tensor):
+            parameters = [parameters]
+        parameters = [p for p in parameters if p.grad is not None]
+        total_norm = torch.norm(
+            torch.stack([torch.norm(p.grad.detach(), norm_type) for p in parameters]),
+            norm_type,
+        )
+        return total_norm.item()
+    
+    @torch.no_grad()
+    def _get_mpd_grad_norm(self, norm_type=2):
+        """
+        Calculates the gradient norm for logging.
+
+        Args:
+            norm_type (float | str | None): the order of the norm.
+        Returns:
+            total_norm (float): the calculated norm.
+        """
+        parameters = self.mpd.parameters()
         if isinstance(parameters, torch.Tensor):
             parameters = [parameters]
         parameters = [p for p in parameters if p.grad is not None]

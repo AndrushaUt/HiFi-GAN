@@ -38,20 +38,47 @@ class Trainer(BaseTrainer):
         metric_funcs = self.metrics["inference"]
         if self.is_train:
             metric_funcs = self.metrics["train"]
-            self.optimizer.zero_grad()
+        generated_audio = self.generator(batch['spectrogram'])
+        batch['generated_audio'] = generated_audio
 
-        outputs = self.model(**batch)
-        batch.update(outputs)
+        generated_audio_spec = self.mec_spec(generated_audio)
 
-        all_losses = self.criterion(**batch)
-        batch.update(all_losses)
+        mpd_real_outputs, _ = self.mpd(batch['audio'])
+        mpd_fake_outputs, _ = self.mpd(generated_audio.detach())
+        msd_real_outputs, _ = self.msd(batch['audio'])
+        msd_fake_outputs, _ = self.msd(generated_audio.detach())
+
+        d_loss_mpd = self.criterion_discriminator(mpd_real_outputs, mpd_fake_outputs)
+        d_loss_msd = self.criterion_discriminator(msd_real_outputs, msd_fake_outputs)
+
+        batch['discriminator_loss'] = d_loss_mpd + d_loss_msd
 
         if self.is_train:
+            self.optimizer_discriminator.zero_grad()
+            batch['discriminator_loss'].backward()
+            self._clip_grad_norm_disc()
+            self.optimizer_discriminator.step()
+
+        _, msd_real_fmaps = self.msd(batch['audio'])
+        _, mpd_real_fmaps = self.mpd(batch['audio'])
+        mpd_fake_outputs, mpd_fake_fmaps = self.mpd(generated_audio)
+        msd_fake_outputs, msd_fake_fmaps = self.msd(generated_audio)
+        g_loss_adv_mpd = self.criterion_generator(mpd_fake_outputs)
+        g_loss_adv_msd = self.criterion_generator(msd_fake_outputs)
+        batch['generator_loss'] = g_loss_adv_mpd + g_loss_adv_msd
+
+        fm_loss_msd = self.criterion_features(msd_real_fmaps, msd_fake_fmaps)
+        fm_loss_mpd = self.criterion_features(mpd_real_fmaps, mpd_fake_fmaps)
+        batch['features_loss'] = fm_loss_mpd + fm_loss_msd
+        batch['mel_spec_loss'] = self.criterion_mel_spec(batch['spectrogram'], generated_audio_spec)
+
+        batch['loss'] = batch['generator_loss'] + 2 * batch['features_loss'] + 45 * batch['mel_spec_loss']
+
+        if self.is_train:
+            self.optimizer_generator.zero_grad()
             batch["loss"].backward()  # sum of all losses is always called loss
-            self._clip_grad_norm()
-            self.optimizer.step()
-            if self.lr_scheduler is not None:
-                self.lr_scheduler.step()
+            self._clip_grad_norm_gen()
+            self.optimizer_generator.step()
 
         # update metrics for each loss (in case of multiple losses)
         for loss_name in self.config.writer.loss_names:
@@ -79,15 +106,20 @@ class Trainer(BaseTrainer):
         # logging scheme might be different for different partitions
         if mode == "train":  # the method is called only every self.log_step steps
             self.log_spectrogram(**batch)
-        else:
-            # Log Stuff
-            self.log_spectrogram(**batch)
-            self.log_predictions(**batch)
+            self.log_audio(**batch)
+        # else:
+        #     # Log Stuff
+        #     self.log_spectrogram(**batch)
+        #     self.log_predictions(**batch)
 
     def log_spectrogram(self, spectrogram, **batch):
         spectrogram_for_plot = spectrogram[0].detach().cpu()
         image = plot_spectrogram(spectrogram_for_plot)
         self.writer.add_image("spectrogram", image)
+    
+    def log_audio(self, audio, generated_audio, **batch):
+        self.writer.add_audio("audio", audio[0], 22050)
+        self.writer.add_audio("generated_audio", generated_audio[0], 22050)
 
     def log_predictions(
         self, text, log_probs, log_probs_length, audio_path, examples_to_log=10, **batch

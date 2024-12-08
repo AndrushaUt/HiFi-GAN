@@ -6,7 +6,7 @@ from src.logger.utils import plot_spectrogram
 from src.metrics.tracker import MetricTracker
 from src.metrics.utils import calc_cer, calc_wer
 from src.trainer.base_trainer import BaseTrainer
-
+import torch.nn.functional as F
 
 class Trainer(BaseTrainer):
     """
@@ -35,13 +35,19 @@ class Trainer(BaseTrainer):
         batch = self.move_batch_to_device(batch)
         batch = self.transform_batch(batch)  # transform batch on device -- faster
 
-        metric_funcs = self.metrics["inference"]
         if self.is_train:
             metric_funcs = self.metrics["train"]
+
+        if self.is_train:
+            self.optimizer_discriminator.zero_grad()
+
         generated_audio = self.generator(batch['spectrogram'])
+        if batch['audio'].size(-1) != generated_audio.size(-1):
+            padding_size = batch['audio'].size(-1) - generated_audio.size(-1)
+            generated_audio = F.pad(generated_audio, (0, padding_size))
         batch['generated_audio'] = generated_audio
 
-        generated_audio_spec = self.mec_spec(generated_audio)
+        generated_audio_spec = self.mec_spec(generated_audio).squeeze(1)
 
         mpd_real_outputs, _ = self.mpd(batch['audio'])
         mpd_fake_outputs, _ = self.mpd(generated_audio.detach())
@@ -54,11 +60,11 @@ class Trainer(BaseTrainer):
         batch['discriminator_loss'] = d_loss_mpd + d_loss_msd
 
         if self.is_train:
-            self.optimizer_discriminator.zero_grad()
             batch['discriminator_loss'].backward()
             self._clip_grad_norm_disc()
             self.optimizer_discriminator.step()
-
+        if self.is_train:
+            self.optimizer_generator.zero_grad()
         _, msd_real_fmaps = self.msd(batch['audio'])
         _, mpd_real_fmaps = self.mpd(batch['audio'])
         mpd_fake_outputs, mpd_fake_fmaps = self.mpd(generated_audio)
@@ -75,7 +81,6 @@ class Trainer(BaseTrainer):
         batch['loss'] = batch['generator_loss'] + 2 * batch['features_loss'] + 45 * batch['mel_spec_loss']
 
         if self.is_train:
-            self.optimizer_generator.zero_grad()
             batch["loss"].backward()  # sum of all losses is always called loss
             self._clip_grad_norm_gen()
             self.optimizer_generator.step()
@@ -83,9 +88,9 @@ class Trainer(BaseTrainer):
         # update metrics for each loss (in case of multiple losses)
         for loss_name in self.config.writer.loss_names:
             metrics.update(loss_name, batch[loss_name].item())
-
-        for met in metric_funcs:
-            metrics.update(met.name, met(**batch))
+        if not self.is_train:
+            for i in range(len(self.metrics["inference"])):
+                self.metrics["inference"][i](batch['generated_audio'])
         return batch
 
     def _log_batch(self, batch_idx, batch, mode="train"):
@@ -107,19 +112,21 @@ class Trainer(BaseTrainer):
         if mode == "train":  # the method is called only every self.log_step steps
             self.log_spectrogram(**batch)
             self.log_audio(**batch)
-        # else:
-        #     # Log Stuff
-        #     self.log_spectrogram(**batch)
-        #     self.log_predictions(**batch)
+        else:
+            self.log_audio(mode=mode, batch_idx=batch_idx, **batch)
 
     def log_spectrogram(self, spectrogram, **batch):
         spectrogram_for_plot = spectrogram[0].detach().cpu()
         image = plot_spectrogram(spectrogram_for_plot)
         self.writer.add_image("spectrogram", image)
     
-    def log_audio(self, audio, generated_audio, **batch):
-        self.writer.add_audio("audio", audio[0], 22050)
-        self.writer.add_audio("generated_audio", generated_audio[0], 22050)
+    def log_audio(self, audio, generated_audio, mode="train", batch_idx=None, **batch):
+        if mode == "train":
+            self.writer.add_audio("audio", audio[0], 22050)
+            self.writer.add_audio("generated_audio", generated_audio[0], 22050)
+        else:
+            self.writer.add_audio(f"audio_val_{batch_idx}", audio[0], 22050)
+            self.writer.add_audio(f"generated_audio_val_{batch_idx}", generated_audio[0], 22050)
 
     def log_predictions(
         self, text, log_probs, log_probs_length, audio_path, examples_to_log=10, **batch

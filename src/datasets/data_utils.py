@@ -71,14 +71,13 @@ def get_dataloaders(config, device):
         dataset = instantiate(
             config.datasets[dataset_partition]
         )  # instance transforms are defined inside
-
-        assert config.dataloader.batch_size <= len(dataset), (
+        assert config.dataloader[dataset_partition].batch_size <= len(dataset), (
             f"The batch size ({config.dataloader.batch_size}) cannot "
             f"be larger than the dataset length ({len(dataset)})"
         )
 
         partition_dataloader = instantiate(
-            config.dataloader,
+            config.dataloader[dataset_partition],
             dataset=dataset,
             collate_fn=collate_fn,
             drop_last=(dataset_partition == "train"),

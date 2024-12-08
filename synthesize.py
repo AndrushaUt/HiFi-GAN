@@ -1,5 +1,5 @@
 import warnings
-
+import os, urllib
 import hydra
 import torch
 from hydra.utils import instantiate
@@ -12,7 +12,7 @@ from src.utils.io_utils import ROOT_PATH
 warnings.filterwarnings("ignore", category=UserWarning)
 
 
-@hydra.main(version_base=None, config_path="src/configs", config_name="inference")
+@hydra.main(version_base=None, config_path="src/configs", config_name="synthesize")
 def main(config):
     """
     Main script for inference. Instantiates the model, metrics, and
@@ -22,6 +22,16 @@ def main(config):
     Args:
         config (DictConfig): hydra experiment config.
     """
+    path = os.path.join(os.path.expanduser('~'), ".cache/wv_mos/wv_mos.ckpt")
+    print(path)
+    if (not os.path.exists(path)):
+        print("Downloading the checkpoint for WV-MOS")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        urllib.request.urlretrieve(
+            "https://zenodo.org/record/6201162/files/wav2vec2.ckpt?download=1",
+            path
+        )
+        print('Weights downloaded in: {} Size: {}'.format(path, os.path.getsize(path)))
     set_random_seed(config.inferencer.seed)
 
     if config.inferencer.device == "auto":
@@ -30,22 +40,20 @@ def main(config):
         device = config.inferencer.device
 
     # setup text_encoder
-    text_encoder = instantiate(config.text_encoder)
-
     # setup data_loader instances
     # batch_transforms should be put on device
-    dataloaders, batch_transforms = get_dataloaders(config, text_encoder, device)
+    dataloaders, batch_transforms = get_dataloaders(config, device)
 
     # build model architecture, then print to console
-    model = instantiate(config.model, n_tokens=len(text_encoder)).to(device)
-    print(model)
+    generator = instantiate(config.generator).to(device)
+    print(generator)
 
     # get metrics
     metrics = {"inference": []}
     for metric_config in config.metrics.get("inference", []):
         # use text_encoder in metrics
         metrics["inference"].append(
-            instantiate(metric_config, text_encoder=text_encoder)
+            instantiate(metric_config)
         )
 
     # save_path for model predictions
@@ -53,11 +61,10 @@ def main(config):
     save_path.mkdir(exist_ok=True, parents=True)
 
     inferencer = Inferencer(
-        model=model,
+        generator=generator,
         config=config,
         device=device,
         dataloaders=dataloaders,
-        text_encoder=text_encoder,
         batch_transforms=batch_transforms,
         save_path=save_path,
         metrics=metrics,

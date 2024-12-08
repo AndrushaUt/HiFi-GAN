@@ -1,0 +1,5 @@
+test:
+  _target_: src.datasets.CustomDatasetText
+  text_dir: /Users/andrewut/Documents/dla/hw3/texts
+  part: test
+  text: ${inferencer.text}

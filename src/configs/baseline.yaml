@@ -11,9 +11,15 @@ defaults:
 optimizer_discriminator:
   _target_: torch.optim.AdamW
   lr: 2e-4
+  betas:
+    - 0.8
+    - 0.999
 optimizer_generator:
   _target_: torch.optim.AdamW
   lr: 2e-4
+  betas:
+    - 0.8
+    - 0.999
 lr_scheduler_discriminator:
   _target_: torch.optim.lr_scheduler.ExponentialLR
   gamma: 0.999
@@ -30,13 +36,13 @@ loss_function_mel_spec:
   _target_: src.loss.MelSpecLoss
 trainer:
   log_step: 50
-  n_epochs: 5
-  epoch_len: 6
+  n_epochs: 5000
+  epoch_len: 410
   device_tensors: ["spectrogram", "audio"] # which tensors should be on device (ex. GPU)
   resume_from: null # null or path to the checkpoint dir with *.pth and config.yaml
   device: auto # device name or "auto"
   override: True # if True, will override the previous run with the same name
-  monitor: "min val_WER_(Argmax)" # "off" or "max/min metric_name", i.e. our goal is to maximize/minimize metric
+  monitor: "max val_MosMetric" # "off" or "max/min metric_name", i.e. our goal is to maximize/minimize metric
   save_period: 5 # checkpoint each save_period epochs in addition to the best epoch
   early_stop: ${trainer.n_epochs} # epochs for early stopping
   save_dir: "saved"

@@ -1,5 +1,5 @@
 import warnings
-
+import os, urllib
 import hydra
 import torch
 from hydra.utils import instantiate
@@ -23,6 +23,17 @@ def main(config):
     Args:
         config (DictConfig): hydra experiment config.
     """
+    path = os.path.join(os.path.expanduser('~'), ".cache/wv_mos/wv_mos.ckpt")
+
+    if (not os.path.exists(path)):
+        print("Downloading the checkpoint for WV-MOS")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        urllib.request.urlretrieve(
+            "https://zenodo.org/record/6201162/files/wav2vec2.ckpt?download=1",
+            path
+        )
+        print('Weights downloaded in: {} Size: {}'.format(path, os.path.getsize(path)))
+
     set_random_seed(config.trainer.seed)
 
     project_config = OmegaConf.to_container(config)

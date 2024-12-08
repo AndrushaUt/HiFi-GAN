@@ -15,7 +15,7 @@ import librosa
 
 from dataclasses import dataclass
 import torch.nn as nn
-
+import numpy as np
 
 @dataclass
 class MelSpectrogramConfig:
@@ -358,7 +358,9 @@ class BaseTrainer:
             logs (dict): logs that contain the information about evaluation.
         """
         self.is_train = False
-        self.model.eval()
+        self.generator.eval()
+        self.msd.eval()
+        self.mpd.eval()
         self.evaluation_metrics.reset()
         with torch.no_grad():
             for batch_idx, batch in tqdm(
@@ -370,12 +372,20 @@ class BaseTrainer:
                     batch,
                     metrics=self.evaluation_metrics,
                 )
+                if self.config.dataloader["val"].batch_size == 1:
+                    self._log_batch(
+                        batch_idx, batch, part
+                    )
             self.writer.set_step(epoch * self.epoch_len, part)
+            if self.config.dataloader["val"].batch_size != 1:
+                self._log_batch(
+                    batch_idx, batch, part
+                )  # log only the last batch during inference
+            for i in range(len(self.metrics['inference'])):
+                print(self.metrics['inference'][i].values)
+                self.evaluation_metrics.update(self.metrics['inference'][i].name, np.mean(self.metrics['inference'][i].values))
+                self.metrics['inference'][i].values = []
             self._log_scalars(self.evaluation_metrics)
-            self._log_batch(
-                batch_idx, batch, part
-            )  # log only the last batch during inference
-
         return self.evaluation_metrics.result()
 
     def _monitor_performance(self, logs, not_improved_count):
@@ -612,13 +622,15 @@ class BaseTrainer:
                 'model_best.pth'(do not duplicate the checkpoint as
                 checkpoint-epochEpochNumber.pth)
         """
-        arch = type(self.model).__name__
         state = {
-            "arch": arch,
             "epoch": epoch,
-            "state_dict": self.model.state_dict(),
-            "optimizer": self.optimizer.state_dict(),
-            "lr_scheduler": self.lr_scheduler.state_dict(),
+            "generator_state_dict": self.generator.state_dict(),
+            "msd_state_dict": self.msd.state_dict(),
+            "mpd_state_dict": self.mpd.state_dict(),
+            "optimizer_discriminator": self.optimizer_discriminator.state_dict(),
+            "optimizer_generator": self.optimizer_generator.state_dict(),
+            "lr_scheduler_discriminator": self.lr_scheduler_discriminator.state_dict(),
+            "lr_scheduler_generator": self.lr_scheduler_generator.state_dict(),
             "monitor_best": self.mnt_best,
             "config": self.config,
         }
@@ -654,26 +666,15 @@ class BaseTrainer:
         self.mnt_best = checkpoint["monitor_best"]
 
         # load architecture params from checkpoint.
-        if checkpoint["config"]["model"] != self.config["model"]:
-            self.logger.warning(
-                "Warning: Architecture configuration given in the config file is different from that "
-                "of the checkpoint. This may yield an exception when state_dict is loaded."
-            )
-        self.model.load_state_dict(checkpoint["state_dict"])
+        self.generator.load_state_dict(checkpoint["generator_state_dict"])
+        self.msd.load_state_dict(checkpoint["msd_state_dict"])
+        self.mpd.load_state_dict(checkpoint["mpd_state_dict"])
 
         # load optimizer state from checkpoint only when optimizer type is not changed.
-        if (
-            checkpoint["config"]["optimizer"] != self.config["optimizer"]
-            or checkpoint["config"]["lr_scheduler"] != self.config["lr_scheduler"]
-        ):
-            self.logger.warning(
-                "Warning: Optimizer or lr_scheduler given in the config file is different "
-                "from that of the checkpoint. Optimizer and scheduler parameters "
-                "are not resumed."
-            )
-        else:
-            self.optimizer.load_state_dict(checkpoint["optimizer"])
-            self.lr_scheduler.load_state_dict(checkpoint["lr_scheduler"])
+        self.optimizer_discriminator.load_state_dict(checkpoint["optimizer_discriminator"])
+        self.optimizer_generator.load_state_dict(checkpoint["optimizer_generator"])
+        self.lr_scheduler_discriminator.load_state_dict(checkpoint["lr_scheduler_discriminator"])
+        self.lr_scheduler_generator.load_state_dict(checkpoint["lr_scheduler_generator"])
 
         self.logger.info(
             f"Checkpoint loaded. Resume training from epoch {self.start_epoch}"
@@ -697,7 +698,6 @@ class BaseTrainer:
             print(f"Loading model weights from: {pretrained_path} ...")
         checkpoint = torch.load(pretrained_path, self.device)
 
-        if checkpoint.get("state_dict") is not None:
-            self.model.load_state_dict(checkpoint["state_dict"])
-        else:
-            self.model.load_state_dict(checkpoint)
+        self.generator.load_state_dict(checkpoint["generator_state_dict"])
+        self.msd.load_state_dict(checkpoint["msd_state_dict"])
+        self.mpd.load_state_dict(checkpoint["mpd_state_dict"])

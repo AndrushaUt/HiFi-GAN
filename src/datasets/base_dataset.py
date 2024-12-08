@@ -2,12 +2,11 @@ import logging
 import random
 
 import numpy as np
-import torch
 import torchaudio
 import random
 from torch.utils.data import Dataset
 
-from src.text_encoder import CTCTextEncoder
+from speechbrain.inference.TTS import Tacotron2
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +23,7 @@ class BaseDataset(Dataset):
     def __init__(
         self,
         index,
+        part,
         target_sr=22050,
         limit=None,
         max_audio_length=None,
@@ -54,13 +54,16 @@ class BaseDataset(Dataset):
             index, max_audio_length, max_text_length
         )
         index = self._shuffle_and_limit_index(index, limit, shuffle_index)
-        if not shuffle_index:
-            index = self._sort_index(index)
+        # if not shuffle_index:
+        #     index = self._sort_index(index)
 
         self._index: list[dict] = index
 
         self.target_sr = target_sr
         self.instance_transforms = instance_transforms
+        self.t = part
+        if self.t == 'test':
+            self.tacotron2 = Tacotron2.from_hparams(source="speechbrain/tts-tacotron2-ljspeech", savedir="tmpdir_tts", overrides={"max_decoder_steps": 10000})
 
     def __getitem__(self, ind):
         """
@@ -78,18 +81,27 @@ class BaseDataset(Dataset):
                 (a single dataset element).
         """
         data_dict = self._index[ind]
-        audio_path = data_dict["audio_path"]
-        audio = self.load_audio(audio_path)
-        # if self.max_audio_length is not None:
-        if audio.shape[1] > 22272:
-            max_start_index = audio.shape[1] - 22272
-            start_index = random.randint(0, max_start_index)
-            audio = audio[:, start_index:start_index + 22272]
+        if self.t != "test":
+            audio_path = data_dict["audio_path"]
+            audio = self.load_audio(audio_path)
+            # if self.max_audio_length is not None:
+            if audio.shape[1] > 22272 and self.t=='train':
+                max_start_index = audio.shape[1] - 22272
+                start_index = random.randint(0, max_start_index)
+                audio = audio[:, start_index:start_index + 22272]
 
-        instance_data = {
-            "audio": audio,
-            "audio_path": audio_path,
-        }
+            instance_data = {
+                "audio": audio,
+                "audio_path": audio_path,
+                "need_pad": bool(self.t == "val")
+            }
+
+        if self.t == 'test':
+            instance_data = {
+                'spectrogram': self.tacotron2.encode_text(data_dict['text'])[0],
+                'path': data_dict['text_path'], 
+                "need_pad": self.t
+            }
 
         # TODO think of how to apply wave augs before calculating spectrogram
         # Note: you may want to preserve both audio in time domain and
@@ -201,11 +213,11 @@ class BaseDataset(Dataset):
                 the dataset. The dict has required metadata information,
                 such as label and object path.
         """
-        for entry in index:
-            assert "audio_len" in entry, (
-                "Each dataset item should include field 'audio_len'"
-                " - length of the audio."
-            )
+        # for entry in index:
+            # assert "audio_len" in entry, (
+            #     "Each dataset item should include field 'audio_len'"
+            #     " - length of the audio."
+            # )
 
     @staticmethod
     def _sort_index(index):

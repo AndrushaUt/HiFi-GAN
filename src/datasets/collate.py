@@ -30,8 +30,6 @@ class MelSpectrogram(nn.Module):
     def __init__(self, config: MelSpectrogramConfig):
         super(MelSpectrogram, self).__init__()
 
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-
         self.config = config
 
         self.mel_spectrogram = torchaudio.transforms.MelSpectrogram(
@@ -44,8 +42,7 @@ class MelSpectrogram(nn.Module):
             n_mels=config.n_mels,
             center=False,
             pad=(config.n_fft - config.hop_length) // 2
-        ).to(device)
-
+        )
         self.mel_spectrogram.spectrogram.power = config.power
 
         mel_basis = librosa.filters.mel(
@@ -87,13 +84,24 @@ def collate_fn(dataset_items: list[dict]) -> dict[str, torch.Tensor | list]:
     audios = []
 
     mel_spec = MelSpectrogram(MelSpectrogramConfig())
+    need_pad = dataset_items[0]['need_pad']
+    if need_pad == 'test':
+        result["spectrogram"] = pad_sequence([item["spectrogram"].squeeze(0).permute(1, 0) for item in dataset_items], batch_first=True).permute(0, 2, 1)
+        result['path'] = [item['path'] for item in dataset_items]
 
-    for item in dataset_items:
-        spectrograms.append(mel_spec(item["audio"]))
-        audios.append(item["audio"])
-    result["audio"] = torch.vstack([item["audio"] for item in dataset_items]).unsqueeze(1)
-
-    result['spectrogram'] = torch.vstack(spectrograms)
+        return result
+    if not need_pad:
+        for item in dataset_items:
+            spectrograms.append(mel_spec(item["audio"]).squeeze(1))
+            audios.append(item["audio"])
+        result["audio"] = torch.vstack([item["audio"] for item in dataset_items]).unsqueeze(1)
+        result['spectrogram'] = torch.vstack(spectrograms)
+    else:
+        for item in dataset_items:
+            spectrograms.append(mel_spec(item["audio"]).squeeze(0).permute(1, 0))
+            audios.append(item["audio"].squeeze(0))
+        result["audio"] = pad_sequence(audios, batch_first=True)
+        result['spectrogram'] = pad_sequence(spectrograms, batch_first=True).permute(0, 2, 1)
 
     result["audio_path"] = [item["audio_path"] for item in dataset_items]
 

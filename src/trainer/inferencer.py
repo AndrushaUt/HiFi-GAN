@@ -4,6 +4,10 @@ from tqdm.auto import tqdm
 from src.metrics.tracker import MetricTracker
 from src.trainer.base_trainer import BaseTrainer
 
+import numpy as np
+import torchaudio
+
+from pathlib import Path
 
 class Inferencer(BaseTrainer):
     """
@@ -16,11 +20,10 @@ class Inferencer(BaseTrainer):
 
     def __init__(
         self,
-        model,
+        generator,
         config,
         device,
         dataloaders,
-        text_encoder,
         save_path,
         metrics=None,
         batch_transforms=None,
@@ -58,10 +61,8 @@ class Inferencer(BaseTrainer):
 
         self.device = device
 
-        self.model = model
+        self.generator = generator
         self.batch_transforms = batch_transforms
-
-        self.text_encoder = text_encoder
 
         # define dataloaders
         self.evaluation_dataloaders = {k: v for k, v in dataloaders.items()}
@@ -126,36 +127,25 @@ class Inferencer(BaseTrainer):
         batch = self.move_batch_to_device(batch)
         batch = self.transform_batch(batch)  # transform batch on device -- faster
 
-        outputs = self.model(**batch)
-        batch.update(outputs)
+        outputs = self.generator(batch['spectrogram'])
 
         if metrics is not None:
             for met in self.metrics["inference"]:
-                metrics.update(met.name, met(**batch))
+                met(outputs)
+                metrics.update(met.name, np.mean(met.values))
+                met.values = []
 
         # Some saving logic. This is an example
         # Use if you need to save predictions on disk
 
-        batch_size = batch["logits"].shape[0]
-        current_id = batch_idx * batch_size
-
-        for i in range(batch_size):
+        for i in range(len(outputs)):
             # clone because of
             # https://github.com/pytorch/pytorch/issues/1995
-            logits = batch["logits"][i].clone()
-            label = batch["labels"][i].clone()
-            pred_label = logits.argmax(dim=-1)
-
-            output_id = current_id + i
-
-            output = {
-                "pred_label": pred_label,
-                "label": label,
-            }
+            wav = outputs[i].detach().cpu().clone()
 
             if self.save_path is not None:
                 # you can use safetensors or other lib here
-                torch.save(output, self.save_path / part / f"output_{output_id}.pth")
+                torchaudio.save(self.save_path / part / f"{str(Path(batch['path'][i].stem))}.wav", wav, 22050)
 
         return batch
 
@@ -171,7 +161,7 @@ class Inferencer(BaseTrainer):
         """
 
         self.is_train = False
-        self.model.eval()
+        self.generator.eval()
 
         self.evaluation_metrics.reset()
 
@@ -193,3 +183,23 @@ class Inferencer(BaseTrainer):
                 )
 
         return self.evaluation_metrics.result()
+
+    def _from_pretrained(self, pretrained_path):
+        """
+        Init model with weights from pretrained pth file.
+
+        Notice that 'pretrained_path' can be any path on the disk. It is not
+        necessary to locate it in the experiment saved dir. The function
+        initializes only the model.
+
+        Args:
+            pretrained_path (str): path to the model state dict.
+        """
+        pretrained_path = str(pretrained_path)
+        if hasattr(self, "logger"):  # to support both trainer and inferencer
+            self.logger.info(f"Loading model weights from: {pretrained_path} ...")
+        else:
+            print(f"Loading model weights from: {pretrained_path} ...")
+        checkpoint = torch.load(pretrained_path, self.device)
+
+        self.generator.load_state_dict(checkpoint["generator_state_dict"])

@@ -13,6 +13,8 @@ hydra-core
 datasets
 wget
 transformers
+pytorch_lightning
+speechbrain
 
 black
 isort

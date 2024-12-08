@@ -2,4 +2,4 @@ from src.datasets.common_voice import CommonVoiceDataset
 from src.datasets.custom_dir_audio_dataset import CustomDirAudioDataset
 from src.datasets.librispeech_dataset import LibrispeechDataset
 from src.datasets.custom_dataset import CustomDatasetWav
-
+from src.datasets.custom_dataset_text import CustomDatasetText

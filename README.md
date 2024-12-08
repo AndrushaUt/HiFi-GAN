@@ -76,7 +76,14 @@ To run inference (evaluate the model or save predictions):
 ```bash
 python3 synthesize.py HYDRA_CONFIG_ARGUMENTS
 ```
-In `synthesize.yaml`, config for inference, you should set path for checkpoint of model. 
+In `synthesize.yaml`, config for inference, you should set path for checkpoint of model. If you want synthesize from wavs, you should set synthesize_from_audio in synthesize.yaml in datasets and in synthesize_from_audio.yaml set wavs_dir for your wavs. 
+
+If you want synthesize from texts, you should set synthesize_from_text in synthesize.yaml in datasets and in synthesize_from_text.yaml set text_dir for your texts. Also you can synthesize text from cli. Then you should run next command:
+```bash
+python3 synthesize.py inferencer.text="your_text"
+```
+
+After all types of inference in your terminal you will see MOS score.
 
 ## Credits
 

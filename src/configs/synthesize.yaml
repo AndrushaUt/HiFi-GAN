@@ -10,5 +10,5 @@ inferencer:
   device: auto # device name or "auto"
   save_path: "example" # any name here, can be a dataset name
   seed: 1
-  from_pretrained: "/Users/andrewut/Documents/dla/hw3/model_best.pth" # path to the pretrained model
+  from_pretrained: "/Users/andrewut/Documents/dla/hw3/pytorch_project_template/best_model.pth" # path to the pretrained model
   text: null

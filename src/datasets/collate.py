@@ -103,7 +103,7 @@ def collate_fn(dataset_items: list[dict]) -> dict[str, torch.Tensor | list]:
         result["audio"] = pad_sequence(audios, batch_first=True)
         result['spectrogram'] = pad_sequence(spectrograms, batch_first=True).permute(0, 2, 1)
 
-    result["audio_path"] = [item["audio_path"] for item in dataset_items]
+    result["path"] = [item["path"] for item in dataset_items]
 
 
     return result

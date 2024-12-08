@@ -59,16 +59,24 @@ Follow these steps to install the project:
 To train a model, run the following command:
 
 ```bash
-python3 train.py -cn=CONFIG_NAME HYDRA_CONFIG_ARGUMENTS
+python3 train.py -cn=hifigan HYDRA_CONFIG_ARGUMENTS
 ```
 
-Where `CONFIG_NAME` is a config from `src/configs` and `HYDRA_CONFIG_ARGUMENTS` are optional arguments.
+Where `hifigan` is a config from `src/configs` and `HYDRA_CONFIG_ARGUMENTS` are optional arguments.
+
+To download weights for HIFI-GAN, run the following command:
+
+```bash
+python3 download_weigths.py --model-url GOOGLE_DISK_LINK
+```
+model_url is optional script, inside script model_url has default value of weights.
 
 To run inference (evaluate the model or save predictions):
 
 ```bash
-python3 inference.py HYDRA_CONFIG_ARGUMENTS
+python3 synthesize.py HYDRA_CONFIG_ARGUMENTS
 ```
+In `synthesize.yaml`, config for inference, you should set path for checkpoint of model. 
 
 ## Credits
 

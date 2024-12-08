@@ -92,7 +92,7 @@ class BaseDataset(Dataset):
 
             instance_data = {
                 "audio": audio,
-                "audio_path": audio_path,
+                "path": audio_path,
                 "need_pad": bool(self.t == "val")
             }
 

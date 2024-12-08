@@ -145,7 +145,10 @@ class Inferencer(BaseTrainer):
 
             if self.save_path is not None:
                 # you can use safetensors or other lib here
-                torchaudio.save(self.save_path / part / f"{str(Path(batch['path'][i].stem))}.wav", wav, 22050)
+                path =batch['path'][i]
+                if not isinstance(path, Path):
+                    path = Path(path)
+                torchaudio.save(self.save_path / part / f"{str(Path(path.stem))}.wav", wav, 22050)
 
         return batch
 

@@ -1,0 +1,4 @@
+test:
+  _target_: src.datasets.CustomDatasetWav
+  wavs_dir: /Users/andrewut/Documents/dla/hw3/Archiv
+  part: val

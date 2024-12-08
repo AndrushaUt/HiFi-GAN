@@ -1,132 +1,253 @@
 import torch.nn as nn
 import torch.nn.functional as F
 
-
 class DiscriminatorP(nn.Module):
-    def __init__(self, period):
-        super(DiscriminatorP, self).__init__()
+    def __init__(self,
+                 period):
+        super().__init__()
         self.period = period
-        self.conv_layers = nn.ModuleList([
-            nn.Sequential(
-                nn.Conv2d(1, 32, (5, 1), (3, 1), padding=(2, 0)),
-                nn.LeakyReLU(0.1)
-            ),
-            nn.Sequential(
-                nn.Conv2d(32, 128, (5, 1), (3, 1), padding=(2, 0)),
-                nn.LeakyReLU(0.1)
-            ),
-            nn.Sequential(
-                nn.Conv2d(128, 512, (5, 1), (3, 1), padding=(2, 0)),
-                nn.LeakyReLU(0.1)
-            ),
-            nn.Sequential(
-                nn.Conv2d(512, 1024, (5, 1), 1, padding=(2, 0)),
-                nn.LeakyReLU(0.1)
-            ),
-            nn.Sequential(
-                nn.Conv2d(1024, 1024, (5, 1), 1, padding=(2, 0)),
-                nn.LeakyReLU(0.1)
+
+        self.layers = nn.ModuleList(
+            [
+                nn.Sequential(
+                    nn.utils.weight_norm(
+                        nn.Conv2d(
+                            in_channels=1,
+                            out_channels=32,
+                            kernel_size=(5, 1),
+                            stride=(3, 1),
+                            padding=(2, 0)
+                        )
+                    ),
+                    nn.LeakyReLU()
+                ),
+                nn.Sequential(
+                    nn.utils.weight_norm(
+                        nn.Conv2d(
+                            in_channels=32,
+                            out_channels=128,
+                            kernel_size=(5, 1),
+                            stride=(3, 1),
+                            padding=(2, 0)
+                        )
+                    ),
+                    nn.LeakyReLU()
+                ),
+                nn.Sequential(
+                    nn.utils.weight_norm(
+                        nn.Conv2d(
+                            in_channels=128,
+                            out_channels=512,
+                            kernel_size=(5, 1),
+                            stride=(3, 1),
+                            padding=(2, 0)
+                        )
+                    ),
+                    nn.LeakyReLU()
+                ),
+                nn.Sequential(
+                    nn.utils.weight_norm(
+                        nn.Conv2d(
+                            in_channels=512,
+                            out_channels=1024,
+                            kernel_size=(5, 1),
+                            stride=(3, 1),
+                            padding=(2, 0)
+                        )
+                    ),
+                    nn.LeakyReLU()
+                ),
+                nn.Sequential(
+                    nn.utils.weight_norm(
+                        nn.Conv2d(
+                            in_channels=1024,
+                            out_channels=1024,
+                            kernel_size=(5, 1),
+                            padding=(2, 0)
+                        )
+                    ),
+                    nn.LeakyReLU()
+                ),
+                nn.utils.weight_norm(
+                nn.Conv2d(
+                    in_channels=1024,
+                    out_channels=1,
+                    kernel_size=(3, 1),
+                    padding="same"
+                )
             )
-        ])
-        self.final_conv = nn.Conv2d(1024, 1, (3, 1), 1, padding=(1, 0))
+            ]
+        )
+
 
     def forward(self, x):
-        fmap = []
-        b, c, t = x.shape
-        if t % self.period != 0:
-            pad_length = self.period - (t % self.period)
-            x = F.pad(x, (0, pad_length), "reflect")
-            t = t + pad_length
-
-        x = x.view(b, c, t // self.period, self.period)
-        for layer in self.conv_layers:
+        fmp = []
+        if x.shape[-1] % self.period > 0:
+            x = F.pad(x, (0, self.period - x.shape[-1] % self.period), mode="reflect")
+        x = x.reshape(x.shape[0], 1, x.shape[-1] // self.period, self.period)
+        for layer in self.layers:
             x = layer(x)
-            fmap.append(x)
-        x = self.final_conv(x)
-        fmap.append(x)
-        x = x.flatten(1, -1)
-        return x, fmap
+            fmp.append(x)
+        return x.flatten(-2, -1), fmp[:-1]
 
 
 class MultiPeriodDiscriminator(nn.Module):
-    def __init__(self):
-        super(MultiPeriodDiscriminator, self).__init__()
-        self.periods = [2, 3, 5, 7, 11]
+    def __init__(self, periods=[2, 3, 5, 7, 11]):
+        super().__init__()
         self.discriminators = nn.ModuleList([
-            DiscriminatorP(p) for p in self.periods
+            DiscriminatorP(
+                period=period
+            )
+            for period in periods
         ])
-
     def forward(self, x):
-        outputs = []
-        feature_maps = []
+        outputs, fmp = [], []
         for disc in self.discriminators:
-            out, fmap = disc(x)
-            outputs.append(out)
-            feature_maps.append(fmap)
-        return outputs, feature_maps
-
+            output, features_list = disc(x)
+            outputs.append(output)
+            fmp.append(features_list)
+        return outputs, fmp
 
 class DiscriminatorS(nn.Module):
     def __init__(self):
-        super(DiscriminatorS, self).__init__()
-        self.conv_layers = nn.ModuleList([
-            nn.Sequential(
-                nn.Conv1d(1, 128, 15, 1, padding=7),
-                nn.LeakyReLU(0.1)
-            ),
-            nn.Sequential(
-                nn.Conv1d(128, 128, 41, 2, groups=4, padding=20),
-                nn.LeakyReLU(0.1)
-            ),
-            nn.Sequential(
-                nn.Conv1d(128, 256, 41, 2, groups=16, padding=20),
-                nn.LeakyReLU(0.1)
-            ),
-            nn.Sequential(
-                nn.Conv1d(256, 512, 41, 4, groups=16, padding=20),
-                nn.LeakyReLU(0.1)
-            ),
-            nn.Sequential(
-                nn.Conv1d(512, 1024, 41, 4, groups=16, padding=20),
-                nn.LeakyReLU(0.1)
-            ),
-            nn.Sequential(
-                nn.Conv1d(1024, 1024, 5, 1, padding=2),
-                nn.LeakyReLU(0.1)
-            )
-        ])
-        self.final_conv = nn.Conv1d(1024, 1, 3, 1, padding=1)
+        super().__init__()
+
+        self.layers = nn.ModuleList(
+            [
+                nn.Sequential(
+                    nn.utils.weight_norm(
+                        nn.Conv1d(
+                            in_channels=1,
+                            out_channels=128,
+                            kernel_size=15,
+                            stride=2,
+                            groups=1,
+                            padding=7
+                        )
+                    ),
+                    nn.LeakyReLU()
+                ),
+                nn.Sequential(
+                    nn.utils.weight_norm(
+                        nn.Conv1d(
+                            in_channels=128,
+                            out_channels=128,
+                            kernel_size=41,
+                            stride=2,
+                            groups=4,
+                            padding=20
+                        )
+                    ),
+                    nn.LeakyReLU()
+                ),
+                nn.Sequential(
+                    nn.utils.weight_norm(
+                        nn.Conv1d(
+                            in_channels=128,
+                            out_channels=256,
+                            kernel_size=41,
+                            stride=2,
+                            groups=16,
+                            padding=20
+                        )
+                    ),
+                    nn.LeakyReLU()
+                ),
+                nn.Sequential(
+                    nn.utils.weight_norm(
+                        nn.Conv1d(
+                            in_channels=256,
+                            out_channels=512,
+                            kernel_size=41,
+                            stride=4,
+                            groups=16,
+                            padding=20
+                        )
+                    ),
+                    nn.LeakyReLU()
+                ),
+                nn.Sequential(
+                    nn.utils.weight_norm(
+                        nn.Conv1d(
+                            in_channels=512,
+                            out_channels=1024,
+                            kernel_size=41,
+                            stride=4,
+                            groups=16,
+                            padding=20
+                        )
+                    ),
+                    nn.LeakyReLU()
+                ),
+                nn.Sequential(
+                    nn.utils.weight_norm(
+                        nn.Conv1d(
+                            in_channels=1024,
+                            out_channels=1024,
+                            kernel_size=41,
+                            stride=1,
+                            groups=16,
+                            padding=20
+                        )
+                    ),
+                    nn.LeakyReLU()
+                ),
+                nn.Sequential(
+                    nn.utils.weight_norm(
+                        nn.Conv1d(
+                            in_channels=1024,
+                            out_channels=1024,
+                            kernel_size=5,
+                            stride=1,
+                            groups=1,
+                            padding=2
+                        )
+                    ),
+                    nn.LeakyReLU()
+                ),
+                nn.Sequential(
+                    nn.utils.weight_norm(
+                        nn.Conv1d(
+                            in_channels=1024,
+                            out_channels=1,
+                            kernel_size=3,
+                            stride=1,
+                            groups=1,
+                            padding=1
+                        )
+                    )
+                )
+            ]
+        )
+
 
     def forward(self, x):
-        fmap = []
-        for layer in self.conv_layers:
+        fmp = []
+        for layer in self.layers:
             x = layer(x)
-            fmap.append(x)
-        x = self.final_conv(x)
-        fmap.append(x)
-        x = x.flatten(1, -1)
-        return x, fmap
+            fmp.append(x)
+        return x, fmp[:-1]
 
 
 class MultiScaleDiscriminator(nn.Module):
     def __init__(self):
-        super(MultiScaleDiscriminator, self).__init__()
+        super().__init__()
+        self.pool = nn.AvgPool1d(kernel_size=4, stride=2, padding=2)
         self.discriminators = nn.ModuleList([
             DiscriminatorS(),
             DiscriminatorS(),
             DiscriminatorS()
         ])
-        self.pooling = nn.AvgPool1d(4, 2, padding=2)
 
     def forward(self, x):
-        outputs = []
-        feature_maps = []
-        for i, disc in enumerate(self.discriminators):
-            if i != 0:
-                x_in = self.pooling(x)
-            else:
-                x_in = x
-            out, fmap = disc(x_in)
-            outputs.append(out)
-            feature_maps.append(fmap)
-        return outputs, feature_maps
+        outputs, fmp = [], []
+        for i in range(len(self.discriminators)):
+            temp_x = x
+            if i == 1:
+                temp_x = self.pool(temp_x)
+            elif i == 2:
+                temp_x = self.pool(self.pool(temp_x))
+            output, features = self.discriminators[i](temp_x)
+            outputs.append(output)
+            fmp.append(features)
+        return outputs, fmp
